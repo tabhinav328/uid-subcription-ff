@@ -1,3 +1,4 @@
+import math
 import os
 import sqlite3
 from datetime import datetime, timedelta
@@ -46,6 +47,14 @@ def init_db():
 
 def parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def days_remaining(expires: datetime, now: datetime) -> int:
+    """Count partial days as 1 day left (1 day = 24h from save/extend time)."""
+    if expires <= now:
+        return 0
+    seconds_left = (expires - now).total_seconds()
+    return max(0, math.ceil(seconds_left / 86400))
 
 
 def admin_required(view):
@@ -167,7 +176,7 @@ def admin_dashboard():
                 "created_at": row["created_at"],
                 "note": row["note"] or "",
                 "active": expires > now,
-                "days_left": max(0, (expires - now).days),
+                "days_left": days_remaining(expires, now),
             }
         )
 
@@ -222,7 +231,7 @@ def api_verify():
             }
         )
 
-    days_left = max(0, (expires - now).days)
+    days_left = days_remaining(expires, now)
     return jsonify(
         {
             "valid": True,
