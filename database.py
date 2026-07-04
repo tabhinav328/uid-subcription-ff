@@ -1,6 +1,8 @@
 import os
 import sqlite3
+import ssl
 from contextlib import contextmanager
+from urllib.parse import unquote, urlparse
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DB_PATH = os.environ.get("DATABASE_PATH", "subscriptions.db")
@@ -16,12 +18,19 @@ def _normalize_database_url(url: str) -> str:
     return url
 
 
-def _postgres_connect_url() -> str:
-    url = _normalize_database_url(DATABASE_URL)
-    if "sslmode=" not in url:
-        sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}sslmode=require"
-    return url
+def _parse_database_url(url: str) -> dict:
+    parsed = urlparse(_normalize_database_url(url))
+    database = (parsed.path or "/").lstrip("/")
+    if "?" in database:
+        database = database.split("?", 1)[0]
+
+    return {
+        "user": unquote(parsed.username or ""),
+        "password": unquote(parsed.password or ""),
+        "host": parsed.hostname or "localhost",
+        "port": parsed.port or 5432,
+        "database": database,
+    }
 
 
 def _adapt_sql(query: str) -> str:
@@ -31,17 +40,24 @@ def _adapt_sql(query: str) -> str:
 
 
 def _connect_postgres():
-    import psycopg2
+    import pg8000.dbapi
 
-    url = _postgres_connect_url()
+    cfg = _parse_database_url(DATABASE_URL)
+    base_kwargs = {
+        "user": cfg["user"],
+        "password": cfg["password"],
+        "host": cfg["host"],
+        "port": cfg["port"],
+        "database": cfg["database"],
+    }
+
     try:
-        return psycopg2.connect(url)
+        return pg8000.dbapi.connect(
+            **base_kwargs,
+            ssl_context=ssl.create_default_context(),
+        )
     except Exception:
-        # Some Render internal URLs work without forced SSL.
-        fallback = url.replace("sslmode=require", "sslmode=prefer")
-        if fallback != url:
-            return psycopg2.connect(fallback)
-        raise
+        return pg8000.dbapi.connect(**base_kwargs)
 
 
 @contextmanager
@@ -65,9 +81,7 @@ def get_db():
 def db_execute(conn, query: str, params=()):
     sql = _adapt_sql(query)
     if USE_POSTGRES:
-        from psycopg2.extras import RealDictCursor
-
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur = conn.cursor()
         cur.execute(sql, params)
         return cur
     return conn.execute(sql, params)
