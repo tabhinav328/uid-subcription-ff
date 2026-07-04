@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CV16 UID Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="wrap">
+        <div class="topbar">
+            <h1>UID Subscriptions</h1>
+            <a href="{{ url_for('admin_logout') }}"><button class="secondary" type="button">Logout</button></a>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+        {% endwith %}
+
+        <div class="card">
+            <h2>Add / Extend Subscription</h2>
+            <form method="post">
+                <div class="grid">
+                    <div>
+                        <label for="uid">UID</label>
+                        <input id="uid" name="uid" placeholder="1234567890" required>
+                    </div>
+                    <div>
+                        <label for="days">Days</label>
+                        <input id="days" name="days" type="number" min="1" value="30" required>
+                    </div>
+                </div>
+                <label for="note">Note (optional)</label>
+                <input id="note" name="note" placeholder="customer name / plan">
+
+                <button type="submit">Save Subscription</button>
+            </form>
+        </div>
+
+        <div class="card">
+            <h2>Active Subscriptions</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>UID</th>
+                        <th>Expires</th>
+                        <th>Days Left</th>
+                        <th>Status</th>
+                        <th>Note</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sub in subscriptions %}
+                    <tr>
+                        <td>{{ sub.uid }}</td>
+                        <td>{{ sub.expires_at }}</td>
+                        <td>{{ sub.days_left }}</td>
+                        <td class="{{ 'active' if sub.active else 'expired' }}">
+                            {{ 'Active' if sub.active else 'Expired' }}
+                        </td>
+                        <td>{{ sub.note }}</td>
+                        <td>
+                            <form method="post" action="{{ url_for('admin_delete', uid=sub.uid) }}">
+                                <button class="secondary" type="submit">Delete</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6">No subscriptions yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
