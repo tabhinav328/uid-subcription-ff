@@ -14,22 +14,38 @@ def _normalize_database_url(url: str) -> str:
     return url
 
 
+def _postgres_connect_url() -> str:
+    url = _normalize_database_url(DATABASE_URL)
+    if "sslmode=" not in url:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}sslmode=require"
+    return url
+
+
 def _adapt_sql(query: str) -> str:
     if USE_POSTGRES:
         return query.replace("?", "%s")
     return query
 
 
+def _connect_postgres():
+    import psycopg2
+
+    url = _postgres_connect_url()
+    try:
+        return psycopg2.connect(url)
+    except Exception:
+        # Some Render internal URLs work without forced SSL.
+        fallback = url.replace("sslmode=require", "sslmode=prefer")
+        if fallback != url:
+            return psycopg2.connect(fallback)
+        raise
+
+
 @contextmanager
 def get_db():
     if USE_POSTGRES:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-
-        conn = psycopg2.connect(
-            _normalize_database_url(DATABASE_URL),
-            cursor_factory=RealDictCursor,
-        )
+        conn = _connect_postgres()
         try:
             yield conn
         finally:
@@ -46,14 +62,24 @@ def get_db():
 def db_execute(conn, query: str, params=()):
     sql = _adapt_sql(query)
     if USE_POSTGRES:
-        cur = conn.cursor()
+        from psycopg2.extras import RealDictCursor
+
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(sql, params)
         return cur
     return conn.execute(sql, params)
 
 
+def row_get(row, key: str, index: int = 0):
+    if row is None:
+        return None
+    try:
+        return row[key]
+    except (TypeError, KeyError, IndexError):
+        return row[index]
+
+
 def init_db():
-    upsert_conflict = "EXCLUDED" if USE_POSTGRES else "excluded"
     with get_db() as conn:
         db_execute(
             conn,

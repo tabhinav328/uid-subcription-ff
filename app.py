@@ -14,7 +14,15 @@ from flask import (
     url_for,
 )
 
-from database import db_execute, get_db, init_db, storage_backend, storage_warning
+from database import (
+    USE_POSTGRES,
+    db_execute,
+    get_db,
+    init_db,
+    row_get,
+    storage_backend,
+    storage_warning,
+)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-change-me")
@@ -23,13 +31,24 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "change-me")
 API_KEY = os.environ.get("API_KEY", "")
 
-UPSERT_SQL = """
+UPSERT_SQL_SQLITE = """
     INSERT INTO subscriptions (uid, expires_at, created_at, note)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(uid) DO UPDATE SET
         expires_at = excluded.expires_at,
         note = CASE
             WHEN excluded.note != '' THEN excluded.note
+            ELSE subscriptions.note
+        END
+"""
+
+UPSERT_SQL_POSTGRES = """
+    INSERT INTO subscriptions (uid, expires_at, created_at, note)
+    VALUES (%s, %s, %s, %s)
+    ON CONFLICT(uid) DO UPDATE SET
+        expires_at = EXCLUDED.expires_at,
+        note = CASE
+            WHEN EXCLUDED.note != '' THEN EXCLUDED.note
             ELSE subscriptions.note
         END
 """
@@ -145,13 +164,14 @@ def save_subscription(uid: str, amount: int, unit: str, note: str) -> tuple[bool
             (uid,),
         ).fetchone()
         if existing:
-            current = parse_iso(existing["expires_at"])
+            current = parse_iso(row_get(existing, "expires_at", 0))
             base = current if current > now else now
             expires = base + delta
 
+        upsert_sql = UPSERT_SQL_POSTGRES if USE_POSTGRES else UPSERT_SQL_SQLITE
         db_execute(
             conn,
-            UPSERT_SQL,
+            upsert_sql,
             (
                 uid,
                 expires.isoformat(),
@@ -191,13 +211,13 @@ def admin_dashboard():
     now = datetime.utcnow()
     subscriptions = []
     for row in rows:
-        expires = parse_iso(row["expires_at"])
+        expires = parse_iso(row_get(row, "expires_at", 1))
         subscriptions.append(
             {
-                "uid": row["uid"],
-                "expires_at": row["expires_at"],
-                "created_at": row["created_at"],
-                "note": row["note"] or "",
+                "uid": row_get(row, "uid", 0),
+                "expires_at": row_get(row, "expires_at", 1),
+                "created_at": row_get(row, "created_at", 2),
+                "note": row_get(row, "note", 3) or "",
                 "active": expires > now,
                 "days_left": days_remaining(expires, now),
                 "time_left": time_remaining(expires, now),
@@ -252,14 +272,14 @@ def api_verify():
             }
         )
 
-    expires = parse_iso(row["expires_at"])
+    expires = parse_iso(row_get(row, "expires_at", 1))
     now = datetime.utcnow()
     if expires <= now:
         return jsonify(
             {
                 "valid": False,
                 "uid": uid,
-                "expires_at": row["expires_at"],
+                "expires_at": row_get(row, "expires_at", 1),
                 "message": "Subscription expired",
             }
         )
@@ -269,7 +289,7 @@ def api_verify():
         {
             "valid": True,
             "uid": uid,
-            "expires_at": row["expires_at"],
+            "expires_at": row_get(row, "expires_at", 1),
             "days_left": days_left,
             "time_left": time_remaining(expires, now),
             "message": "Active subscription",
@@ -279,18 +299,30 @@ def api_verify():
 
 @app.get("/health")
 def health():
-    with get_db() as conn:
-        count = db_execute(conn, "SELECT COUNT(*) AS total FROM subscriptions").fetchone()["total"]
+    try:
+        with get_db() as conn:
+            row = db_execute(
+                conn, "SELECT COUNT(*) AS total FROM subscriptions"
+            ).fetchone()
+            count = row_get(row, "total", 0)
 
-    payload = {
-        "status": "ok",
-        "storage": storage_backend(),
-        "subscriptions": count,
-    }
-    warning = storage_warning()
-    if warning:
-        payload["warning"] = warning
-    return jsonify(payload)
+        payload = {
+            "status": "ok",
+            "storage": storage_backend(),
+            "subscriptions": count,
+        }
+        warning = storage_warning()
+        if warning:
+            payload["warning"] = warning
+        return jsonify(payload)
+    except Exception as exc:
+        return jsonify(
+            {
+                "status": "error",
+                "storage": storage_backend(),
+                "message": str(exc),
+            }
+        ), 500
 
 
 if __name__ == "__main__":
