@@ -107,6 +107,12 @@ th, td {
     margin-bottom: 20px;
 }
 
+.storage-hint {
+    margin: 4px 0 0;
+    font-size: 0.85rem;
+    color: #8aa0b2;
+}
+
 .grid {
     display: grid;
     grid-template-columns: 1fr 1fr;

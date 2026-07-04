@@ -1,6 +1,5 @@
 import math
 import os
-import sqlite3
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -15,34 +14,25 @@ from flask import (
     url_for,
 )
 
+from database import db_execute, get_db, init_db, storage_backend, storage_warning
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-change-me")
 
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "change-me")
 API_KEY = os.environ.get("API_KEY", "")
-DB_PATH = os.environ.get("DATABASE_PATH", "subscriptions.db")
 
-
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_db():
-    with get_db() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                uid TEXT PRIMARY KEY,
-                expires_at TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                note TEXT DEFAULT ''
-            )
-            """
-        )
-        conn.commit()
+UPSERT_SQL = """
+    INSERT INTO subscriptions (uid, expires_at, created_at, note)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(uid) DO UPDATE SET
+        expires_at = excluded.expires_at,
+        note = CASE
+            WHEN excluded.note != '' THEN excluded.note
+            ELSE subscriptions.note
+        END
+"""
 
 
 def parse_iso(value: str) -> datetime:
@@ -149,7 +139,8 @@ def save_subscription(uid: str, amount: int, unit: str, note: str) -> tuple[bool
     expires = now + delta
 
     with get_db() as conn:
-        existing = conn.execute(
+        existing = db_execute(
+            conn,
             "SELECT expires_at FROM subscriptions WHERE uid = ?",
             (uid,),
         ).fetchone()
@@ -158,17 +149,9 @@ def save_subscription(uid: str, amount: int, unit: str, note: str) -> tuple[bool
             base = current if current > now else now
             expires = base + delta
 
-        conn.execute(
-            """
-            INSERT INTO subscriptions (uid, expires_at, created_at, note)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(uid) DO UPDATE SET
-                expires_at = excluded.expires_at,
-                note = CASE
-                    WHEN excluded.note != '' THEN excluded.note
-                    ELSE subscriptions.note
-                END
-            """,
+        db_execute(
+            conn,
+            UPSERT_SQL,
             (
                 uid,
                 expires.isoformat(),
@@ -193,7 +176,6 @@ def admin_dashboard_save():
     ok, message = save_subscription(uid, amount, unit, note)
     flash(message, "ok" if ok else "error")
 
-    # Post/Redirect/Get: refresh must not resubmit the form and add days again.
     return redirect(url_for("admin_dashboard"))
 
 
@@ -201,8 +183,9 @@ def admin_dashboard_save():
 @admin_required
 def admin_dashboard():
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT uid, expires_at, created_at, note FROM subscriptions ORDER BY expires_at DESC"
+        rows = db_execute(
+            conn,
+            "SELECT uid, expires_at, created_at, note FROM subscriptions ORDER BY expires_at DESC",
         ).fetchall()
 
     now = datetime.utcnow()
@@ -221,14 +204,22 @@ def admin_dashboard():
             }
         )
 
-    return render_template("dashboard.html", subscriptions=subscriptions)
+    warning = storage_warning()
+    if warning:
+        flash(warning, "error")
+
+    return render_template(
+        "dashboard.html",
+        subscriptions=subscriptions,
+        storage_backend=storage_backend(),
+    )
 
 
 @app.post("/admin/delete/<uid>")
 @admin_required
 def admin_delete(uid):
     with get_db() as conn:
-        conn.execute("DELETE FROM subscriptions WHERE uid = ?", (uid,))
+        db_execute(conn, "DELETE FROM subscriptions WHERE uid = ?", (uid,))
         conn.commit()
     flash(f"Removed UID {uid}", "ok")
     return redirect(url_for("admin_dashboard"))
@@ -246,7 +237,8 @@ def api_verify():
         return jsonify({"valid": False, "message": "Invalid UID format"}), 400
 
     with get_db() as conn:
-        row = conn.execute(
+        row = db_execute(
+            conn,
             "SELECT uid, expires_at, note FROM subscriptions WHERE uid = ?",
             (uid,),
         ).fetchone()
@@ -287,7 +279,18 @@ def api_verify():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok"})
+    with get_db() as conn:
+        count = db_execute(conn, "SELECT COUNT(*) AS total FROM subscriptions").fetchone()["total"]
+
+    payload = {
+        "status": "ok",
+        "storage": storage_backend(),
+        "subscriptions": count,
+    }
+    warning = storage_warning()
+    if warning:
+        payload["warning"] = warning
+    return jsonify(payload)
 
 
 if __name__ == "__main__":

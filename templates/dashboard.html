@@ -9,7 +9,10 @@
 <body>
     <div class="wrap">
         <div class="topbar">
-            <h1>UID Subscriptions</h1>
+            <div>
+                <h1>UID Subscriptions</h1>
+                <p class="storage-hint">Storage: {{ storage_backend }}</p>
+            </div>
             <a href="{{ url_for('admin_logout') }}"><button class="secondary" type="button">Logout</button></a>
         </div>
 
