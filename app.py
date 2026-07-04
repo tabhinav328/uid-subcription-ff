@@ -92,49 +92,65 @@ def admin_logout():
     return redirect(url_for("admin_login"))
 
 
-@app.route("/admin/dashboard", methods=["GET", "POST"])
+def save_subscription(uid: str, days: int, note: str) -> tuple[bool, str]:
+    if not uid.isdigit():
+        return False, "UID must be numeric"
+    if days <= 0:
+        return False, "Days must be greater than 0"
+
+    now = datetime.utcnow()
+    expires = now + timedelta(days=days)
+
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT expires_at FROM subscriptions WHERE uid = ?",
+            (uid,),
+        ).fetchone()
+        if existing:
+            current = parse_iso(existing["expires_at"])
+            base = current if current > now else now
+            expires = base + timedelta(days=days)
+
+        conn.execute(
+            """
+            INSERT INTO subscriptions (uid, expires_at, created_at, note)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(uid) DO UPDATE SET
+                expires_at = excluded.expires_at,
+                note = CASE
+                    WHEN excluded.note != '' THEN excluded.note
+                    ELSE subscriptions.note
+                END
+            """,
+            (
+                uid,
+                expires.isoformat(),
+                now.isoformat(),
+                note,
+            ),
+        )
+        conn.commit()
+
+    return True, f"Subscription saved for UID {uid}"
+
+
+@app.post("/admin/dashboard")
+@admin_required
+def admin_dashboard_save():
+    uid = request.form.get("uid", "").strip()
+    days = int(request.form.get("days", "0") or "0")
+    note = request.form.get("note", "").strip()
+
+    ok, message = save_subscription(uid, days, note)
+    flash(message, "ok" if ok else "error")
+
+    # Post/Redirect/Get: refresh must not resubmit the form and add days again.
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.get("/admin/dashboard")
 @admin_required
 def admin_dashboard():
-    if request.method == "POST":
-        uid = request.form.get("uid", "").strip()
-        days = int(request.form.get("days", "0") or "0")
-        note = request.form.get("note", "").strip()
-
-        if not uid.isdigit():
-            flash("UID must be numeric", "error")
-        elif days <= 0:
-            flash("Days must be greater than 0", "error")
-        else:
-            now = datetime.utcnow()
-            expires = now + timedelta(days=days)
-            with get_db() as conn:
-                existing = conn.execute(
-                    "SELECT expires_at FROM subscriptions WHERE uid = ?",
-                    (uid,),
-                ).fetchone()
-                if existing:
-                    current = parse_iso(existing["expires_at"])
-                    base = current if current > now else now
-                    expires = base + timedelta(days=days)
-
-                conn.execute(
-                    """
-                    INSERT INTO subscriptions (uid, expires_at, created_at, note)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(uid) DO UPDATE SET
-                        expires_at = excluded.expires_at,
-                        note = excluded.note
-                    """,
-                    (
-                        uid,
-                        expires.isoformat(),
-                        now.isoformat(),
-                        note,
-                    ),
-                )
-                conn.commit()
-            flash(f"Subscription saved for UID {uid}", "ok")
-
     with get_db() as conn:
         rows = conn.execute(
             "SELECT uid, expires_at, created_at, note FROM subscriptions ORDER BY expires_at DESC"

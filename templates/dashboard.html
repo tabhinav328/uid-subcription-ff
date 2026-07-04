@@ -23,7 +23,7 @@
 
         <div class="card">
             <h2>Add / Extend Subscription</h2>
-            <form method="post">
+            <form method="post" action="{{ url_for('admin_dashboard_save') }}">
                 <div class="grid">
                     <div>
                         <label for="uid">UID</label>
