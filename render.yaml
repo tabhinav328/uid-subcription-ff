@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: cv16-uid-subscription
+    name: uid-subcription-ff
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
