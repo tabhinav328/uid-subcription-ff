@@ -117,11 +117,6 @@ def check_api_key():
     return request.headers.get("X-API-Key") == API_KEY
 
 
-@app.before_request
-def ensure_db():
-    init_db()
-
-
 @app.get("/")
 def index():
     return redirect(url_for("admin_login"))
@@ -325,6 +320,15 @@ def health():
         ), 500
 
 
+def _startup_init_db():
+    try:
+        init_db()
+    except Exception as exc:
+        app.logger.error("Database init failed: %s", exc)
+
+
+_startup_init_db()
+
+
 if __name__ == "__main__":
-    init_db()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)

@@ -7,6 +7,8 @@ DB_PATH = os.environ.get("DATABASE_PATH", "subscriptions.db")
 
 USE_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 
+_schema_ready = False
+
 
 def _normalize_database_url(url: str) -> str:
     if url.startswith("postgres://"):
@@ -44,6 +46,7 @@ def _connect_postgres():
 
 @contextmanager
 def get_db():
+    init_db()
     if USE_POSTGRES:
         conn = _connect_postgres()
         try:
@@ -79,20 +82,41 @@ def row_get(row, key: str, index: int = 0):
         return row[index]
 
 
-def init_db():
-    with get_db() as conn:
-        db_execute(
-            conn,
-            """
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                uid TEXT PRIMARY KEY,
-                expires_at TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                note TEXT DEFAULT ''
-            )
-            """,
+def _ensure_schema(conn):
+    db_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            uid TEXT PRIMARY KEY,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            note TEXT DEFAULT ''
         )
-        conn.commit()
+        """,
+    )
+    conn.commit()
+
+
+def init_db():
+    global _schema_ready
+    if _schema_ready:
+        return
+
+    if USE_POSTGRES:
+        conn = _connect_postgres()
+        try:
+            _ensure_schema(conn)
+        finally:
+            conn.close()
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            _ensure_schema(conn)
+        finally:
+            conn.close()
+
+    _schema_ready = True
 
 
 def storage_backend() -> str:
