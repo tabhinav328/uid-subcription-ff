@@ -32,13 +32,23 @@ label {
     color: #ccc;
 }
 
-input, button {
+input, select, button {
     width: 100%;
     padding: 10px 12px;
     border-radius: 8px;
     border: 1px solid #333;
     background: #101010;
     color: #fff;
+}
+
+select {
+    cursor: pointer;
+}
+
+.duration-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
 }
 
 button {

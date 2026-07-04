@@ -49,12 +49,47 @@ def parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
 
 
+VALID_UNITS = {"minutes", "hours", "days"}
+
+
+def duration_to_timedelta(amount: int, unit: str) -> timedelta:
+    if unit == "minutes":
+        return timedelta(minutes=amount)
+    if unit == "hours":
+        return timedelta(hours=amount)
+    return timedelta(days=amount)
+
+
+def format_duration(amount: int, unit: str) -> str:
+    label = {"minutes": "minute", "hours": "hour", "days": "day"}[unit]
+    if amount == 1:
+        return f"1 {label}"
+    return f"{amount} {label}s"
+
+
 def days_remaining(expires: datetime, now: datetime) -> int:
     """Count partial days as 1 day left (1 day = 24h from save/extend time)."""
     if expires <= now:
         return 0
     seconds_left = (expires - now).total_seconds()
     return max(0, math.ceil(seconds_left / 86400))
+
+
+def time_remaining(expires: datetime, now: datetime) -> str:
+    if expires <= now:
+        return "0m"
+    seconds_left = int((expires - now).total_seconds())
+    days = seconds_left // 86400
+    hours = (seconds_left % 86400) // 3600
+    minutes = (seconds_left % 3600) // 60
+
+    if days > 0:
+        return f"{days}d {hours}h" if hours else f"{days}d"
+    if hours > 0:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    if minutes > 0:
+        return f"{minutes}m"
+    return "<1m"
 
 
 def admin_required(view):
@@ -101,14 +136,17 @@ def admin_logout():
     return redirect(url_for("admin_login"))
 
 
-def save_subscription(uid: str, days: int, note: str) -> tuple[bool, str]:
+def save_subscription(uid: str, amount: int, unit: str, note: str) -> tuple[bool, str]:
     if not uid.isdigit():
         return False, "UID must be numeric"
-    if days <= 0:
-        return False, "Days must be greater than 0"
+    if amount <= 0:
+        return False, "Duration must be greater than 0"
+    if unit not in VALID_UNITS:
+        return False, "Invalid duration unit"
 
+    delta = duration_to_timedelta(amount, unit)
     now = datetime.utcnow()
-    expires = now + timedelta(days=days)
+    expires = now + delta
 
     with get_db() as conn:
         existing = conn.execute(
@@ -118,7 +156,7 @@ def save_subscription(uid: str, days: int, note: str) -> tuple[bool, str]:
         if existing:
             current = parse_iso(existing["expires_at"])
             base = current if current > now else now
-            expires = base + timedelta(days=days)
+            expires = base + delta
 
         conn.execute(
             """
@@ -140,17 +178,19 @@ def save_subscription(uid: str, days: int, note: str) -> tuple[bool, str]:
         )
         conn.commit()
 
-    return True, f"Subscription saved for UID {uid}"
+    duration_label = format_duration(amount, unit)
+    return True, f"Subscription saved for UID {uid} (+{duration_label})"
 
 
 @app.post("/admin/dashboard")
 @admin_required
 def admin_dashboard_save():
     uid = request.form.get("uid", "").strip()
-    days = int(request.form.get("days", "0") or "0")
+    amount = int(request.form.get("amount", "0") or "0")
+    unit = request.form.get("unit", "days").strip().lower()
     note = request.form.get("note", "").strip()
 
-    ok, message = save_subscription(uid, days, note)
+    ok, message = save_subscription(uid, amount, unit, note)
     flash(message, "ok" if ok else "error")
 
     # Post/Redirect/Get: refresh must not resubmit the form and add days again.
@@ -177,6 +217,7 @@ def admin_dashboard():
                 "note": row["note"] or "",
                 "active": expires > now,
                 "days_left": days_remaining(expires, now),
+                "time_left": time_remaining(expires, now),
             }
         )
 
@@ -238,6 +279,7 @@ def api_verify():
             "uid": uid,
             "expires_at": row["expires_at"],
             "days_left": days_left,
+            "time_left": time_remaining(expires, now),
             "message": "Active subscription",
         }
     )
